@@ -1,6 +1,8 @@
 # meta-hackathon-aipool
 
-The plan is to implement the pool logic and adjust all components to work together.
+The goal of this project is to efficiently automate repetitive pool maintenance, specifically backwashing the filter.
+
+The plan is to implement the pool logic - read the pressure gauge from the filter, control the pump and the backwash valve and adjust all components to work together.
 
 ## Components
 
