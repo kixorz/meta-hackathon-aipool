@@ -21,7 +21,8 @@ Numbers live here. Agents in `.opencode/agents/` must read this per task, never 
 
 ## Provisioning (camera-reads-QR)
 - QR payload: `WIFI:T:WPA;S:<ssid>;P:<pass>;;`. NVS stores ssid/pass/hostname (`aipool`).
-- Boot: try NVS → else QR-scan mode (~15 s, LED blink) → connect → fallback AP `AIPool-XXXX`. No broker fields in v1.
+- Precedence: NVS (if set) > build-time env defaults > empty. Bake defaults without touching git: `AIPOOL_WIFI_SSID=MyNet AIPOOL_WIFI_PASS=secret pio run -t upload` (empty when unset).
+- Boot: try NVS/defaults → else QR-scan mode (~15 s, LED blink) → connect → fallback AP `AIPool-XXXX`. No broker fields in v1.
 
 ## Network + HTTP API (polling only, no SSE/MQTT)
 - mDNS `aipool.local`. Poll `GET /api/state` @1 Hz:
