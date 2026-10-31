@@ -69,3 +69,11 @@ Loop: R1..R8 ON/OFF forever. Keys: 1..8 A O S.
 
 No reply at all usually means: A/B swapped, missing common GND, wrong
 slave/baud on the board, or the relay board has no power.
+
+## Test results (2026-10-31, live board on the bus)
+| Test | Result |
+|---|---|
+| Flash `pio run -t upload` | SUCCESS, clean `boot:0x13`, no GPIO12 issue (TX on GPIO14) |
+| Boot safety sweep | All 8 relays OFF, every `0x05` echoed |
+| Click loop R1–R7 observed | Every ON/OFF echoed, every `0x01` readback matched (`0x01`, `0x02`, `0x04` …), `CLICK`/`CLACK` throughout |
+| Conclusion | ESP32CAM → transceiver → relay board path fully verified |
