@@ -18,7 +18,8 @@ Desktop.ini
 .platformio/
 build/
 artifacts/
-firmware/
+firmware/*/build/
+firmware/*/.pio/
 *.bin
 *.elf
 *.map
