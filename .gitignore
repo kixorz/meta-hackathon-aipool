@@ -1,0 +1,80 @@
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- Windows / Linux ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*~
+
+# --- PlatformIO / ESP32 / Arduino ---
+.pio/
+.pioenvs/
+.piolibdeps/
+.pio-cloud/
+.platformio/
+build/
+artifacts/
+firmware/
+*.bin
+*.elf
+*.map
+*.hex
+# PlatformIO monitor / device noise
+pio-device-monitor-*.log
+
+# --- ESP-IDF ---
+sdkconfig
+sdkconfig.old
+sdkconfig.defaults.bak
+dependencies.lock
+managed_components/
+idf_component.yml.lock
+
+# --- Python (rs485_pc_test.py tooling) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+.env/
+pip-wheel-metadata/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- IDEs / editors ---
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+.vim/
+*.swp
+*.swo
+*~
+
+# --- Secrets / local config ---
+.env
+.env.*
+*.pem
+*.key
+secrets.yaml
+secrets.json
+platformio_local.ini
+local_*.ini
+
+# --- Logs / temp ---
+*.log
+*.tmp
+*.bak
