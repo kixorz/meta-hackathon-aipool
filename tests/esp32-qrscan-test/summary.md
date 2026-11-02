@@ -41,12 +41,19 @@ capture loop, and the serial diagnostics. Fix decode bugs in `src/`, not here.
   snapshot, `D` snapshot + ascii thumbnail (`qrscan_dump_image_ascii`),
   `F` full-res grayscale frame as hex between `pgm begin/end` markers
   (host script reassembles to PGM/PNG — shows exactly what quirc sees),
-  `L` camera flash LED (GPIO4) on/off (ON at boot), `V` sensor vflip
-  on/off, `M` sensor hmirror on/off (`V+M` = 180-degree rotation; this
-  rig's module is mounted upside-down so both default ON — decode itself
-  is rotation-invariant),
+  `L` flash manual toggle (also disables auto), `A` flash auto on/off
+  (default ON at boot: LED follows ambient — dark unlit frame turns it on,
+  every 10th lit frame is metered with 4 unlit probe frames to decide off;
+  decisions use unlit frames only so the LED cannot oscillate), `V` sensor
+  vflip on/off, `M` sensor hmirror on/off (`V+M` = 180-degree rotation;
+  this rig's module reads out vflip-native so vflip-only (1,0) restores the
+  true image — verified by finder template-match),
   `H` help. If camera init fails the test drops to self-test + manual
   snapshots.
+- Scan lines carry the exposure reading: `[QR] fN WxH full=A half=B rc=C
+  (str) flash=F mean=M` (`flash` = LED state during that frame, `mean` =
+  stride-sampled gray mean); LED changes log as `[QR] flash ON/OFF
+  (reason mean=N)`. The `pgm begin` marker also reports `flash=`/`mean=`.
 - Workspace: `static qr_workspace_t` (~39KB, never the stack).
 
 ## How to re-run
@@ -60,18 +67,19 @@ pio run -t upload
 ```
 === ESP32CAM QR SCAN TEST ===
 Reuses src/qrscan.c + include/qrscan.h over src/quirc/.
-Keys: C continuous, S snapshot, D snapshot+ascii, H help.
+Keys: C continuous, S snapshot, D snapshot+ascii, F pgm dump, L flash manual, A flash auto, V vflip, M hmirror, H help.
 [SELF] null img -> -6 (bad image or no memory) OK
 [SELF] tiny 10x10 -> -6 (bad image or no memory) OK
 [SELF] flat 64x64 -> rc=-1 (no QR found) count=0 OK
 ...
 [SELF] ALL SELF-TESTS PASSED
+Camera orientation: vflip=1 hmirror=0 (rc=0/0)
 Camera VGA 640x480 gray ready. Continuous ON.
 ===============================
-[QR] f1 640x480 full=0 half=0 rc=-1 (no QR found)
+[QR] f1 640x480 full=0 half=0 rc=-1 (no QR found) flash=1 mean=132
 [QR] hint: no QR found — hold code 15-25cm in front of lens, fill 1/4+ of frame, flat, lit
 ...
-[QR] f12 640x480 full=1 half=0 rc=0 (ok)
+[QR] f12 640x480 full=1 half=0 rc=0 (ok) flash=1 mean=128
 [QR]   cand0 size=29 err=0 plen=32 corners=(180,120)(320,118)(322,258)(182,260)
 [QR] DECODED v2 ecc=M mask=1 dim=29 len=32 data="WIFI:T:WPA;S:MyNet;P:secret;;"
 ```
@@ -89,7 +97,7 @@ the lens protective film still on.
 | Camera init | VGA 640x480 gray ready, first try |
 | Continuous scan (20 frames, no QR in view) | Stable ~1 fps, `full=0 half=0 rc=-1` throughout, hints every 5th frame, zero resets / zero WDT |
 | `F` full-frame PGM dump | 307200/307200 bytes reassembled to PGM+PNG on host; viewed: QR present bottom-right but cut off at the frame edge (see Notes) |
-| Flash LED (`L`, ON at boot) | Night-and-day: dark frame -> bright high-contrast frame; grid now found every frame (`full=1`, v2 29x29, stable corners) |
+| Flash auto-exposure (`A` on) | VERIFIED live: lit frames `mean~=165-173` decode `rc=0` every frame; every 10th lit frame the LED meters 4 unlit probe frames (`mean~=5-6`, room is dark) and returns (`flash ON (auto probe dark)`); `L` forces manual off (stays off, no probes), `A` re-enables and relights within one frame. No oscillation by construction (decisions use unlit frames only) |
 | Live QR decode (`DECODED ...`) | PASSED 2026-11-01: first frame after boot decoded `v3 ecc=L mask=4 dim=29 len=38` — a 38-byte `WIFI:T:WPA;S:...;P:...;;` provisioning payload (secret redacted here). Notably via the half-res second-chance path (`full=0 half=1`): full-res found no grid, the 2x-downsampled pass locked and decoded. Corners pixel-stable, near-perfect rectangle (264,93)(397,93)(396,226)(262,224) |
 | Orientation (`V`/`M`, default ON/OFF) | RESOLVED: paper ground truth (missing finder = bottom-right = normal print) + template-match of the (1,1) stream (finders TL/TR/BR, BL absent = mirrored) proved the module reads out vflip-native. vflip-only (1,0) restores the true image — verified by template-match (TL 0.74 / TR 0.83 / BL 0.70 present, BR 0.10 absent = normal). Driver accepts both flips (`rc=0/0`) |
 

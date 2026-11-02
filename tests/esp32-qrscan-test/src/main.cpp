@@ -20,7 +20,8 @@
 //   C = toggle continuous scan   S = single capture + decode snapshot
 //   D = ascii thumbnail of last frame (#=dark)
 //   F = full-res grayscale frame as hex (host -> PGM, shows quirc's input)
-//   L = toggle camera flash LED (GPIO4)   V = toggle sensor vflip
+//   L = flash manual toggle (auto off)   A = flash auto on/off
+//   V = toggle sensor vflip
 //   M = toggle sensor hmirror (V+M = 180-degree rotation)   H = help
 // The loop never blocks on USB; continuous scan runs by default.
 //
@@ -66,10 +67,73 @@
 static qr_workspace_t s_ws;
 static bool s_continuous = true;
 static bool s_flash = true; // flash on at boot: the QR target needs light
+static bool s_flashAuto = true; // auto mode: LED follows ambient (A toggles)
 static int s_vflip = CAM_VFLIP_INIT;
 static int s_hmirror = CAM_HMIRROR_INIT;
 static unsigned long s_frameN = 0;
 static String s_line;
+
+// ---------- flash auto-exposure ----------
+// The LED follows ambient light measured from the captured frame itself
+// (stride-sampled mean gray). Decisions use UNLIT frames only: a dark unlit
+// frame turns the LED on; every FLASH_AUTO_PROBE_EVERY lit frames the LED
+// goes off for FLASH_AUTO_PROBE_N frames (AEC settle time) and the last
+// probe frame decides — bright stays off, dark turns back on. Because lit
+// frames never influence a decision, the LED cannot oscillate.
+#define FLASH_AUTO_DARK_MEAN 70   // unlit mean below this: need light
+#define FLASH_AUTO_PROBE_EVERY 10 // lit frames between ambient probes
+#define FLASH_AUTO_PROBE_N 4      // unlit probe frames per probe
+static int s_probeIn = FLASH_AUTO_PROBE_EVERY; // lit frames until next probe
+static int s_probing = 0;                      // unlit probe frames remaining
+
+static int frameMean(const uint8_t *buf, size_t n) {
+  uint32_t acc = 0;
+  size_t cnt = 0;
+  for (size_t i = 0; i < n; i += 16) {
+    acc += buf[i];
+    cnt++;
+  }
+  return cnt ? (int)(acc / cnt) : 0;
+}
+
+static void flashSet(bool on, const char *why, int mean) {
+  if (s_flash == on)
+    return;
+  s_flash = on;
+  digitalWrite(FLASH_PIN, on ? HIGH : LOW);
+  s_probing = 0;
+  if (on)
+    s_probeIn = FLASH_AUTO_PROBE_EVERY;
+  if (mean < 0)
+    Serial.printf("[QR] flash %s (%s)\n", on ? "ON" : "OFF", why);
+  else
+    Serial.printf("[QR] flash %s (%s mean=%d)\n", on ? "ON" : "OFF", why,
+                  mean);
+}
+
+// Call once per captured frame with that frame's mean. The frame was
+// captured under the pre-call LED state; a change applies to next frames.
+static void flashAutoUpdate(int mean) {
+  if (!s_flashAuto)
+    return;
+  if (!s_flash) {
+    if (s_probing > 0) {
+      if (--s_probing == 0) {
+        // Verdict on the AEC-settled probe frame.
+        if (mean >= FLASH_AUTO_DARK_MEAN)
+          s_probeIn = FLASH_AUTO_PROBE_EVERY; // ambient suffices, stay off
+        else
+          flashSet(true, "auto probe dark", mean);
+      }
+      return;
+    }
+    if (mean < FLASH_AUTO_DARK_MEAN)
+      flashSet(true, "auto dark", mean);
+  } else if (--s_probeIn <= 0) {
+    flashSet(false, "auto probe", mean); // meter ambient unlit
+    s_probing = FLASH_AUTO_PROBE_N;
+  }
+}
 
 // ---------- error-path self-test (no camera needed) ----------
 // Deterministic checks of the wrapper's argument guards + backend smoke:
@@ -144,7 +208,9 @@ static void dumpFramePgm() {
     return;
   }
   static const char kHex[] = "0123456789abcdef";
-  Serial.printf("[QR] pgm begin %d %d\n", fb->width, fb->height);
+  int mean = frameMean(fb->buf, (size_t)fb->width * (size_t)fb->height);
+  Serial.printf("[QR] pgm begin %d %d flash=%d mean=%d\n", fb->width, fb->height,
+                s_flash ? 1 : 0, mean);
   char line[129];
   line[128] = '\0';
   size_t n = (size_t)fb->width * (size_t)fb->height;
@@ -182,14 +248,17 @@ static void scanOnce(bool dumpAscii) {
   qr_image_t img = {fb->buf, (int)fb->width, (int)fb->height};
   qr_result_t res = {};
   int count = 0;
+  int mean = frameMean(fb->buf, (size_t)fb->width * (size_t)fb->height);
   qr_candidate_t cands[QRSCAN_MAX_CANDS] = {};
   int rc = qrscan_decode_verbose(&img, &s_ws, &res, &count, cands,
                                  QRSCAN_MAX_CANDS);
   s_frameN++;
   int full_n = count / 100, half_n = count % 100;
-  Serial.printf("[QR] f%lu %dx%d full=%d half=%d rc=%d (%s)\n", s_frameN,
-                fb->width, fb->height, full_n, half_n, rc,
-                qrscan_strerror(rc));
+  Serial.printf(
+      "[QR] f%lu %dx%d full=%d half=%d rc=%d (%s) flash=%d mean=%d\n", s_frameN,
+      fb->width, fb->height, full_n, half_n, rc, qrscan_strerror(rc),
+      s_flash ? 1 : 0, mean);
+  flashAutoUpdate(mean); // LED change (if any) applies to next frames
   int nshow = full_n + half_n;
   if (nshow > QRSCAN_MAX_CANDS)
     nshow = QRSCAN_MAX_CANDS;
@@ -237,9 +306,13 @@ static void handleUsb() {
         } else if (k == 'F' || k == 'f') {
           dumpFramePgm();
         } else if (k == 'L' || k == 'l') {
-          s_flash = !s_flash;
-          digitalWrite(FLASH_PIN, s_flash ? HIGH : LOW);
-          Serial.printf("[QR] flash LED %s\n", s_flash ? "ON" : "OFF");
+          s_flashAuto = false; // explicit manual control wins over auto
+          flashSet(!s_flash, "manual", -1);
+        } else if (k == 'A' || k == 'a') {
+          s_flashAuto = !s_flashAuto;
+          s_probing = 0;
+          s_probeIn = FLASH_AUTO_PROBE_EVERY;
+          Serial.printf("[QR] flash auto %s\n", s_flashAuto ? "ON" : "OFF");
         } else if (k == 'V' || k == 'v') {
           s_vflip = !s_vflip;
           sensor_t *sens = esp_camera_sensor_get();
@@ -259,16 +332,19 @@ static void handleUsb() {
         } else if (k == 'H' || k == 'h' || k == '?') {
           Serial.println("keys: C continuous on/off, S single snapshot, "
                          "D snapshot + ascii, F full-frame pgm dump, "
-                         "L flash on/off, V vflip, M hmirror, H help");
+                         "L flash manual (auto off), A flash auto, V vflip, "
+                         "M hmirror, H help");
         } else {
           Serial.println("keys: C continuous on/off, S single snapshot, "
                          "D snapshot + ascii, F full-frame pgm dump, "
-                         "L flash on/off, V vflip, M hmirror, H help");
+                         "L flash manual (auto off), A flash auto, V vflip, "
+                         "M hmirror, H help");
         }
       } else if (s_line.length() > 0) {
         Serial.println("keys: C continuous on/off, S single snapshot, "
                        "D snapshot + ascii, F full-frame pgm dump, "
-                       "L flash on/off, V vflip, M hmirror, H help");
+                       "L flash manual (auto off), A flash auto, V vflip, "
+                       "M hmirror, H help");
       }
       s_line = "";
     } else {
@@ -292,7 +368,8 @@ void setup() {
   Serial.println("=== ESP32CAM QR SCAN TEST ===");
   Serial.println("Reuses src/qrscan.c + include/qrscan.h over src/quirc/.");
   Serial.println("Keys: C continuous, S snapshot, D snapshot+ascii, "
-                   "F pgm dump, L flash, V vflip, M hmirror, H help.");
+                   "F pgm dump, L flash manual, A flash auto, V vflip, "
+                   "M hmirror, H help.");
 
   memset(&s_ws, 0, sizeof(s_ws));
   bool selfOk = selfTest();
