@@ -68,12 +68,23 @@ static int pumpRead(void *ctx, uint8_t *buf, size_t maxLen,
 static void pumpDelayMs(uint32_t ms) { delay(ms); }
 static uint32_t pumpMillis() { return millis(); }
 
+static char s_lastClog[96] = {0};
+static unsigned long s_lastClogMs = 0;
+
 static void clog(void *ctx, century_log_level_t lvl, const char *file,
                  int line, const char *msg) {
   (void)ctx;
   (void)file;
   (void)line;
-  if (lvl >= CENTURY_LOG_WARN) {
+  if (lvl < CENTURY_LOG_WARN || !msg)
+    return;
+  // Rate-limit duplicate driver warnings (absent pump = same timeout every
+  // poll): first occurrence + one reminder per minute, always on change.
+  unsigned long now = millis();
+  if (strcmp(msg, s_lastClog) != 0 || now - s_lastClogMs >= 60000) {
+    strncpy(s_lastClog, msg, sizeof(s_lastClog) - 1);
+    s_lastClog[sizeof(s_lastClog) - 1] = '\0';
+    s_lastClogMs = now;
     Serial.printf("[pump %c] %s\n", lvl == CENTURY_LOG_WARN ? 'W' : 'E', msg);
   }
 }
@@ -102,7 +113,8 @@ bool pumpPoll(PumpReading &out) {
   century_status_t st = CENTURY_STATUS_UNKNOWN;
   century_err_t e = century_get_status(&s_client, &st);
   if (e != CENTURY_OK) {
-    snprintf(s_err, sizeof(s_err), "status %s", century_strerror(e));
+    snprintf(s_err, sizeof(s_err), "no reply: status %s (A/B? GND? power? 0x15)",
+             century_strerror(e));
     out.err = s_err;
     return false;
   }

@@ -31,6 +31,15 @@ static ControlState g_ctrl;
 static unsigned long g_bootMs = 0;
 static unsigned long g_lastTickMs = 0;
 
+// Last-known pump state from the 1Hz tick (avoids extra bus traffic when
+// reporting). s_pumpSeen latches on the first successful poll.
+static bool s_pumpSeen = false;
+static bool s_pumpStopped = false;
+static bool s_pumpWasOk = true;
+static unsigned long s_lastPumpMsgMs = 0;
+static unsigned long s_lastWaitMsgMs = 0;
+static unsigned long s_lastRefreshMsgMs = 0;
+
 // ---------- NVS ----------
 static void configLoad() {
   g_cfg = appConfigDefaults();
@@ -99,12 +108,23 @@ static void requestMode(PoolMode target) {
     return;
   // Safety: any motion goes through the 15s pre-hold.
   g_ctrl.backwashActive = false;
+  if (!s_pumpSeen)
+    Serial.println("[ctrl] pump never seen on bus: move will hold at the "
+                   "15s pre-hold until the pump confirms stopped (safety)");
   enterMoving(target);
 }
 
 static void controlUpdate() {
   uint32_t now = millis();
   if (g_state.mode == PoolMode::MOVING && g_ctrl.preHoldActive) {
+    if (now - g_ctrl.preHoldStartMs >= PRE_HOLD_MS && !s_pumpStopped &&
+        now - s_lastWaitMsgMs >= 30000) {
+      // No extra bus traffic here (uses the tick's cached poll): the live
+      // pumpStoppedOk() gate below still decides; this is just the reminder.
+      s_lastWaitMsgMs = now;
+      Serial.println("[ctrl] holding at pre-hold: pump not confirmed "
+                     "stopped (move proceeds when it is)");
+    }
     if ((now - g_ctrl.preHoldStartMs >= PRE_HOLD_MS) && pumpStoppedOk()) {
       g_ctrl.preHoldActive = false;
       PoolMode target = g_ctrl.pendingTarget;
@@ -114,6 +134,7 @@ static void controlUpdate() {
         g_state.mode = PoolMode::FAULT;
         g_state.fault = valveLastError();
         g_ctrl.backwashActive = false;
+        Serial.printf("[ctrl] move failed, FAULT: %s\n", g_state.fault);
         return;
       }
       g_state.valve = (target == PoolMode::BACKWASH) ? "backwash" : "filter";
@@ -126,6 +147,8 @@ static void controlUpdate() {
           g_state.mode = PoolMode::FAULT;
           g_state.fault = pumpLastError();
           g_ctrl.backwashActive = false;
+          Serial.printf("[ctrl] pump run failed, FAULT: %s\n",
+                        pumpLastError());
           return;
         }
         g_state.pump = "running";
@@ -419,19 +442,25 @@ void setup() {
   configLoad();
   busInit(); // shared RS485 mutex + UART2 @9600
   pumpInit(g_cfg.target_rpm);
-  if (!valveInit()) {
+  bool valveOk = valveInit();
+  if (!valveOk) {
     Serial.printf("[valve] fail-safe init failed: %s\n", valveLastError());
     g_state.mode = PoolMode::FAULT;
     g_state.fault = valveLastError();
   }
   // Camera first: provScanQr() inside wifiInit() borrows the same VGA
   // grayscale stream via qrscan_decode — no second esp_camera_init.
+  const char *camState = "ok";
   if (!visionInit()) {
     Serial.printf("[vision] init failed: %s (psi stays 0)\n",
                   visionLastError());
+    camState = visionLastError();
   } else {
     Serial.println("[vision] VGA grayscale ready");
   }
+  // One-line bench inventory before wifiInit() (which may block until join).
+  Serial.printf("[app] hw: valve=%s pump=probing-in-loop camera=%s\n",
+                valveOk ? "ok" : g_state.fault, camState);
 
   wifiInit();
   if (!MDNS.begin(g_cfg.hostname)) {
@@ -453,7 +482,12 @@ void loop() {
   handleSerial();
   controlUpdate();
   if (g_state.mode == PoolMode::BACKWASH) {
-    pumpRefreshIfDue(g_cfg.target_rpm); // 60s demand re-arm
+    if (!pumpRefreshIfDue(g_cfg.target_rpm) &&
+        millis() - s_lastRefreshMsgMs >= 60000) {
+      // Demand re-arm failed (rare path: only in BACKWASH): report throttled.
+      s_lastRefreshMsgMs = millis();
+      Serial.printf("[pump] demand re-arm failed (%s)\n", pumpLastError());
+    }
   }
   if (millis() - g_lastTickMs >= 1000) {
     g_lastTickMs = millis();
@@ -465,12 +499,24 @@ void loop() {
     }
     PumpReading pr;
     if (pumpPoll(pr)) {
+      s_pumpSeen = true;
+      s_pumpStopped = (pr.status == CENTURY_STATUS_STOPPED);
       g_state.rpm = pr.rpmOk ? (int)pr.rpm : 0;
       g_state.watts = pr.wattsOk ? (int)pr.watts : 0;
       if (pr.status == CENTURY_STATUS_FAULT) {
         g_state.mode = PoolMode::FAULT;
         g_state.fault = century_fault_str(pr.faultCode);
       }
+      if (!s_pumpWasOk) {
+        s_pumpWasOk = true;
+        Serial.println("[pump] reply OK (bus recovered)");
+      }
+    } else if (s_pumpWasOk || millis() - s_lastPumpMsgMs >= 60000) {
+      // Absent pump: report once, then one reminder per minute (not per poll).
+      s_pumpWasOk = false;
+      s_lastPumpMsgMs = millis();
+      s_pumpStopped = false;
+      Serial.printf("[pump] %s — quiet for 60s\n", pumpLastError());
     }
     digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // 1Hz alive blink
   }

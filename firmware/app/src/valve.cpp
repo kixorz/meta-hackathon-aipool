@@ -22,7 +22,8 @@ static bool writeRelay(uint8_t relay, bool on) {
   }
   size_t n = rs485Txn(tx, txLen, rx, sizeof(rx));
   if (!relay_board_is_write_echo(tx, rx, n)) {
-    snprintf(s_err, sizeof(s_err), "R%u %s no echo", relay, on ? "ON" : "OFF");
+    snprintf(s_err, sizeof(s_err), "R%u %s no echo (A/B? GND? 12V? slave 1)",
+             relay, on ? "ON" : "OFF");
     return false;
   }
   return true;
@@ -89,7 +90,7 @@ static bool driveTo(bool backwash) {
   // 4. Verify parked: no drive energized.
   uint8_t bm = 0;
   if (!valveReadback(bm)) {
-    snprintf(s_err, sizeof(s_err), "readback failed");
+    snprintf(s_err, sizeof(s_err), "readback failed (A/B? GND? 12V?)");
     return false;
   }
   if (relay_board_get(bm, VALVE_RELAY_BACKWASH_DRIVE) ||
