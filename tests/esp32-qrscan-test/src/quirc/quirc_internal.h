@@ -1,0 +1,1 @@
+../../../../src/quirc/quirc_internal.h
