@@ -18,6 +18,7 @@ The plan is to implement the pool logic - read the pressure gauge from the filte
 * gauge
 * relays
 * pool pump
+* qrscan (QR decode over vendored quirc, tested via `tests/esp32-qrscan-test`)
 
 ## Hardware
 
