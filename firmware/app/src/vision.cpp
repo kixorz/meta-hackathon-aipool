@@ -91,6 +91,12 @@ bool visionInit() {
     s->set_gain_ctrl(s, 1);
     s->set_exposure_ctrl(s, 1);
     s->set_awb_gain(s, 1);
+    // This rig's module reads out vertically flipped natively: vflip
+    // restores the true image (bench-proven in tests/esp32-qrscan-test —
+    // without it the stream is mirrored and quirc never gets past DATA_ECC).
+    // Decode itself is rotation-invariant; mirroring is not.
+    if (s->set_vflip)
+      s->set_vflip(s, 1);
   }
   s_ready = true;
   return true;

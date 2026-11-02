@@ -1,5 +1,5 @@
 // AIPool app — Phase 3: valve + pump + VGA gauge + QR provisioning.
-// Spec: docs/aipool-spec.md. quirc vendored under src/quirc/ (MIT).
+// Spec: docs/aipool-spec.md. QR via shared qrscan lib (src/qrscan.c over src/quirc/, MIT).
 // Controls-safety: see valve.cpp contract + controlUpdate pre-hold/cap.
 
 #include <Arduino.h>
@@ -319,7 +319,8 @@ static void routesInit() {
 }
 
 // ---------- net ----------
-// Boot net flow (spec): NVS creds -> QR scan (15s, LED blink) -> AP fallback.
+// Boot net flow: NVS creds -> QR scan (15s, LED blink) retry forever.
+// No fallback AP: stays in STA + QR-scan until provisioned.
 static bool wifiConnectAttempt(unsigned long timeoutMs = 10000) {
   WiFi.mode(WIFI_STA);
   WiFi.begin(g_cfg.wifi_ssid, g_cfg.wifi_pass);
@@ -331,40 +332,39 @@ static bool wifiConnectAttempt(unsigned long timeoutMs = 10000) {
 }
 
 static void wifiInit() {
-  if (strlen(g_cfg.wifi_ssid) > 0) {
-    Serial.println("[net] trying NVS credentials...");
-    if (wifiConnectAttempt()) {
-      Serial.printf("[net] connected: %s\n",
-                    WiFi.localIP().toString().c_str());
-      return;
-    }
-    Serial.println("[net] NVS credentials failed, entering QR scan...");
-  } else {
-    Serial.println("[net] no NVS credentials, entering QR scan...");
-  }
-  char payload[256];
-  if (provScanQr(PROV_SCAN_TIMEOUT_MS, payload, sizeof(payload))) {
-    char ssid[64], pass[64];
-    if (provParseWifi(payload, ssid, sizeof(ssid), pass, sizeof(pass))) {
-      Serial.printf("[net] QR parsed ssid=%s, connecting...\n", ssid);
-      strncpy(g_cfg.wifi_ssid, ssid, sizeof(g_cfg.wifi_ssid) - 1);
-      strncpy(g_cfg.wifi_pass, pass, sizeof(g_cfg.wifi_pass) - 1);
-      configSave();
+  for (;;) {
+    if (strlen(g_cfg.wifi_ssid) > 0) {
+      Serial.println("[net] trying NVS credentials...");
       if (wifiConnectAttempt()) {
         Serial.printf("[net] connected: %s\n",
                       WiFi.localIP().toString().c_str());
         return;
       }
-      Serial.println("[net] QR credentials failed");
+      Serial.println("[net] NVS credentials failed, entering QR scan...");
     } else {
-      Serial.println("[net] QR payload not WIFI:.. format");
+      Serial.println("[net] no NVS credentials, entering QR scan...");
     }
-  } else {
-    Serial.println("[net] QR scan timeout");
+    char payload[256];
+    if (provScanQr(PROV_SCAN_TIMEOUT_MS, payload, sizeof(payload))) {
+      char ssid[64], pass[64];
+      if (provParseWifi(payload, ssid, sizeof(ssid), pass, sizeof(pass))) {
+        Serial.printf("[net] QR parsed ssid=%s, connecting...\n", ssid);
+        strncpy(g_cfg.wifi_ssid, ssid, sizeof(g_cfg.wifi_ssid) - 1);
+        strncpy(g_cfg.wifi_pass, pass, sizeof(g_cfg.wifi_pass) - 1);
+        configSave();
+        if (wifiConnectAttempt()) {
+          Serial.printf("[net] connected: %s\n",
+                        WiFi.localIP().toString().c_str());
+          return;
+        }
+        Serial.println("[net] QR credentials failed, retrying scan...");
+      } else {
+        Serial.println("[net] QR payload not WIFI:.. format, retrying scan...");
+      }
+    } else {
+      Serial.println("[net] QR scan timeout, retrying scan...");
+    }
   }
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP("AIPool-XXXX");
-  Serial.println("[net] fallback AP AIPool-XXXX");
 }
 
 // ---------- USB debug (bench HIL; mirrors tests/esp32-combined-test keys)
@@ -424,6 +424,8 @@ void setup() {
     g_state.mode = PoolMode::FAULT;
     g_state.fault = valveLastError();
   }
+  // Camera first: provScanQr() inside wifiInit() borrows the same VGA
+  // grayscale stream via qrscan_decode — no second esp_camera_init.
   if (!visionInit()) {
     Serial.printf("[vision] init failed: %s (psi stays 0)\n",
                   visionLastError());

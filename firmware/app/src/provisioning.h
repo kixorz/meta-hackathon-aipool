@@ -1,8 +1,10 @@
 #pragma once
 
-// WiFi provisioning: camera-reads-QR -> NVS -> connect, AP fallback.
+// WiFi provisioning: camera-reads-QR -> NVS -> connect (retry scan forever).
 // QR payload: WIFI:T:WPA;S:<ssid>;P:<pass>;; (spec docs/aipool-spec.md).
-// Camera is owned by vision.cpp (VGA grayscale); scanning reuses its frames.
+// Decode via qrscan.h (quirc backend); camera is the vision VGA grayscale
+// stream — call visionInit() once before provScanQr(), then provScanQr()
+// borrows frames via esp_camera_fb_get() until the timeout expires.
 
 #include <stddef.h>
 #include <stdint.h>
