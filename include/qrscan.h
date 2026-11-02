@@ -76,8 +76,13 @@ typedef struct {
 } qr_candidate_t;
 
 // Verbose decode: like qrscan_decode but also reports candidate count and
-// per-candidate geometry/errors. count_out=quirc_count, cands filled up to
-// max_cands. Return/out semantics identical to qrscan_decode.
+// per-candidate geometry/errors. cands filled up to max_cands.
+// count_out is the plain full-res quirc grid count when that decode
+// succeeds; otherwise packed as full*100+half, where full is the full-res
+// count and half the latest second-pass count (2x-downsampled copy on
+// 640x480 frames, then 1px-shift jiggle retries when a grid exists but
+// won't decode). Unpack with full = count/100, half = count%100.
+// Return/out semantics identical to qrscan_decode.
 int qrscan_decode_verbose(const qr_image_t *img, qr_workspace_t *ws,
                           qr_result_t *out, int *count_out,
                           qr_candidate_t *cands, int max_cands);

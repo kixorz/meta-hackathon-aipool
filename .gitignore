@@ -27,6 +27,9 @@ firmware/*/.pio/
 # PlatformIO monitor / device noise
 pio-device-monitor-*.log
 
+# Clang tooling / IDE helper databases (generated, never commit)
+compile_commands.json
+
 # --- ESP-IDF ---
 sdkconfig
 sdkconfig.old
