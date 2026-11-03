@@ -467,6 +467,8 @@ void setup() {
     Serial.println("[net] mDNS failed");
   } else {
     Serial.printf("[net] mDNS: http://%s.local\n", g_cfg.hostname);
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("[net] mDNS service _http._tcp:80 advertised");
   }
   routesInit();
   s_server.begin();
