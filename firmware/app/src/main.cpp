@@ -39,6 +39,7 @@ static bool s_pumpWasOk = true;
 static unsigned long s_lastPumpMsgMs = 0;
 static unsigned long s_lastWaitMsgMs = 0;
 static unsigned long s_lastRefreshMsgMs = 0;
+static unsigned long s_lastPsiOkMs = 0; // last good gauge read (staleness)
 
 // ---------- NVS ----------
 static void configLoad() {
@@ -168,15 +169,22 @@ static void controlUpdate() {
 
 // ---------- HTTP ----------
 static String stateJson() {
-  char buf[320];
+  char buf[512];
   snprintf(buf, sizeof(buf),
-           "{\"psi\":%.2f,\"rpm\":%d,\"watts\":%d,\"mode\":\"%s\","
-           "\"valve\":\"%s\",\"pump\":\"%s\",\"fault\":\"%s\","
-           "\"threshold_psi\":%.2f,\"backwash_min\":%u,\"target_rpm\":%u}",
-           g_state.psi, g_state.rpm, g_state.watts,
+           "{\"psi\":%.2f,\"psi_ok\":%s,\"psi_age_s\":%lu,"
+           "\"conf_sigma\":%.2f,\"support\":%.3f,\"blur\":%.0f,"
+           "\"rpm\":%d,\"watts\":%d,\"mode\":\"%s\",\"valve\":\"%s\","
+           "\"pump\":\"%s\",\"fault\":\"%s\",\"backwash_active\":%s,"
+           "\"backwash_remaining_s\":%lu,\"threshold_psi\":%.2f,"
+           "\"backwash_min\":%u,\"target_rpm\":%u,\"up_s\":%lu}",
+           g_state.psi, g_state.psi_ok ? "true" : "false",
+           (unsigned long)g_state.psi_age_s, g_state.conf_sigma,
+           g_state.support, g_state.blur, g_state.rpm, g_state.watts,
            poolModeStr(g_state.mode), g_state.valve, g_state.pump,
-           g_state.fault, g_cfg.threshold_psi, g_cfg.backwash_min,
-           g_cfg.target_rpm);
+           g_state.fault, g_state.backwash_active ? "true" : "false",
+           (unsigned long)g_state.backwash_remaining_s, g_cfg.threshold_psi,
+           g_cfg.backwash_min, g_cfg.target_rpm,
+           (unsigned long)((millis() - g_bootMs) / 1000));
   return String(buf);
 }
 
@@ -496,8 +504,23 @@ void loop() {
     if (visionPoll()) {
       VisionReading v = visionLatest();
       g_state.psi = v.psi;
+      g_state.psi_ok = true;
       g_state.conf_sigma = v.confSigma;
       g_state.support = v.support;
+      g_state.blur = v.blur;
+      s_lastPsiOkMs = millis();
+    } else {
+      g_state.psi_ok = false;
+    }
+    g_state.psi_age_s = (uint32_t)((millis() - s_lastPsiOkMs) / 1000);
+    g_state.backwash_active = g_ctrl.backwashActive;
+    if (g_ctrl.backwashActive) {
+      uint32_t elapsedS = (uint32_t)((millis() - g_ctrl.backwashStartMs) / 1000);
+      uint32_t capS = backwashCapMs() / 1000;
+      g_state.backwash_remaining_s =
+          (elapsedS < capS) ? (capS - elapsedS) : 0;
+    } else {
+      g_state.backwash_remaining_s = 0;
     }
     PumpReading pr;
     if (pumpPoll(pr)) {

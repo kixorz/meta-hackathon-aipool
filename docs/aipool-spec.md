@@ -26,9 +26,10 @@ Numbers live here. Agents in `.opencode/agents/` must read this per task, never 
 
 ## Network + HTTP API (polling only, no SSE/MQTT)
 - mDNS `aipool.local`. Poll `GET /api/state` @1 Hz:
-  `{"psi","rpm","watts","mode":"filter|backwash|moving|fault","valve","pump","fault","threshold_psi","backwash_min"}`.
+  `{"psi","psi_ok","psi_age_s","conf_sigma","support","blur","rpm","watts","mode":"filter|backwash|moving|fault","valve","pump","fault","backwash_active","backwash_remaining_s","threshold_psi","backwash_min","target_rpm","up_s"}`.
+  Gauge freshness: `psi_ok=false` or growing `psi_age_s` means the reading is stale (no dial in view / camera fault) — gate automations on it. `backwash_remaining_s` counts down the run cap while `backwash_active`.
 - `POST /api/cmd {"mode":"filter|backwash","threshold_psi":float,"backwash_min":<=10,"rpm":600..3450}` — validated, NVS-persisted. Thresholds adjustable here.
-- `GET /gauge` single VGA JPEG snapshot (no stream), `GET /health`.
+- `GET /gauge` single VGA BMP snapshot (8-bit gray, no stream), `GET /health`.
 - Backwash: `PUMP_STOP → 15 s → VALVE_MOVE → BACKWASH_RUN(≤10 min hard kill) → PUMP_STOP → 15 s → VALVE_MOVE → FILTER`. 10-min timer starts at run entry.
 
 ## Drivers (don't fork)

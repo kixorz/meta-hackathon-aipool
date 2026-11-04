@@ -32,13 +32,18 @@ struct AppState {
   PoolMode mode = PoolMode::FILTER;
   // Phase 1 fills these; Phase 0 leaves sentinel/default values.
   float psi = 0.0f;
+  bool psi_ok = false;
+  uint32_t psi_age_s = 0; // seconds since last good gauge read (staleness)
   float conf_sigma = 0.0f;
   float support = 0.0f;
+  float blur = 0.0f;
   int rpm = 0;
   int watts = 0;
   const char *valve = "filter";
   const char *pump = "stopped";
   const char *fault = "none";
+  bool backwash_active = false;
+  uint32_t backwash_remaining_s = 0; // seconds left in the run cap
 };
 
 struct ControlState {
