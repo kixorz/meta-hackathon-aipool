@@ -1,0 +1,227 @@
+# =============================================================================
+# AIPool Home Assistant PACKAGE — README
+# -----------------------------------------------------------------------------
+# Device:    http://aipool.local (fallback http://172.16.0.126 if mDNS fails)
+#            Polling only (no SSE/MQTT). GET /api/state, POST /api/cmd.
+# Install:   1. Copy this file to e.g. <config>/packages/aipool_package.yaml
+#            2. Reference it:  homeassistant: { packages: { aipool: !include
+#               packages/aipool_package.yaml } }
+#            3. Restart Home Assistant (or reload packages / template entities /
+#               input_numbers / automations as applicable).
+#            If mDNS fails on your LAN, replace ALL occurrences of
+#            http://aipool.local with http://172.16.0.126.
+#
+# ENTITIES / SERVICES CREATED BY THIS PACKAGE:
+#   sensor.aipool_state                      (rest, scan_interval 10, psi + 16
+#                                             json_attributes; see below)
+#   binary_sensor.aipool_gauge_stale         (template, device_class problem —
+#                                             ON when gauge data is stale)
+#   binary_sensor.aipool_backwash_running    (template, device_class running —
+#                                             ON while backwash_active; used to
+#                                             disable the Lovelace button)
+#   input_number.aipool_target_rpm           (600–3450, step 50, default 1600)
+#   input_number.aipool_threshold_psi        (0–60, step 0.5, default 25.0)
+#   input_number.aipool_backwash_min         (1–10, step 1, default 8)
+#   rest_command.aipool_backwash             (service: POST {"mode":"backwash"})
+#   rest_command.aipool_filter               (service: POST {"mode":"filter"})
+#   rest_command.aipool_set_rpm              (service: POST {"rpm": <600-3450>})
+#   rest_command.aipool_set_threshold_psi    (service: POST {"threshold_psi": <>})
+#   rest_command.aipool_set_backwash_window  (service: POST {"backwash_min": <>})
+#   automation.aipool_scheduled_backwash     (weekly timed backwash + return)
+#   automation.aipool_gauge_stale_alert      (persistent notification on stale)
+#
+# SAFETY / INTERLOCK NOTES (do not "optimize" these away):
+# - FILTER = pump stopped; BACKWASH = pump runs at target_rpm. Mode changes go
+#   through a 15 s pre-hold SERVER-side and BACKWASH auto-stops at <=10 min.
+#   This package never rapid-toggles modes: single-shot automations
+#   (mode: single), 2 s gaps between POSTs, confirmation dialogs on buttons.
+# - NOTHING here consumes raw psi for decisions. Automations gate on
+#   binary_sensor.aipool_gauge_stale (stale when psi_ok != true OR
+#   psi_age_s > 30). Cards display psi but decisions use the staleness sensor.
+# - Client-side ranges mirror firmware validation: rpm 600–3450 (step 50),
+#   backwash_min 1–10 (step 1); threshold_psi has no server bound so the helper
+#   clamps it to 0–60 psi (gauge range). Firmware 400-errors anything else.
+# - HA owns scheduling (weekly automation below). No firmware scheduler assumed.
+# - input_number sliders are consumed by the scheduled-backwash automation
+#   (pushed to the device at run start). For ad-hoc pushes, call the
+#   rest_command services from Developer Tools with explicit values, e.g.
+#   service: rest_command.aipool_set_rpm with data {"rpm": 2000}.
+#   (Optional: add your own automation triggered on input_number change that
+#   forwards the value — deliberately NOT included to keep this package to the
+#   two example automations and avoid surprise writes / interlock fights.)
+# =============================================================================
+
+sensor:
+  - platform: rest
+    name: AIPool State
+    resource: http://aipool.local/api/state
+    scan_interval: 10
+    value_template: "{{ value_json.psi }}"
+    unit_of_measurement: "psi"
+    device_class: pressure
+    state_class: measurement
+    json_attributes:
+      - psi_ok
+      - psi_age_s
+      - conf_sigma
+      - support
+      - blur
+      - rpm
+      - watts
+      - mode
+      - valve
+      - pump
+      - fault
+      - backwash_active
+      - backwash_remaining_s
+      - threshold_psi
+      - backwash_min
+      - target_rpm
+      - up_s
+
+template:
+  - binary_sensor:
+      - name: AIPool Gauge Stale
+        unique_id: aipool_gauge_stale
+        device_class: problem
+        # Stale when psi_ok != true OR psi_age_s > 30. Unknown/unavailable
+        # sensor also counts as stale so automations fail safe (hold).
+        state: >-
+          {{ states('sensor.aipool_state') in ['unknown', 'unavailable', 'none']
+             or state_attr('sensor.aipool_state', 'psi_ok') != true
+             or (state_attr('sensor.aipool_state', 'psi_age_s') | float(9999)) > 30 }}
+      # Helper for the Lovelace backwash card: core Lovelace conditional cards
+      # can only branch on entity STATE (not attributes), so this mirrors the
+      # backwash_active attribute into an entity to disable/hide the start
+      # button while a run is active.
+      - name: AIPool Backwash Running
+        unique_id: aipool_backwash_running
+        device_class: running
+        state: "{{ state_attr('sensor.aipool_state', 'backwash_active') == true }}"
+
+rest_command:
+  aipool_backwash:
+    url: http://aipool.local/api/cmd
+    method: post
+    content_type: "application/json"
+    payload: '{"mode": "backwash"}'
+  aipool_filter:
+    url: http://aipool.local/api/cmd
+    method: post
+    content_type: "application/json"
+    payload: '{"mode": "filter"}'
+  aipool_set_rpm:
+    url: http://aipool.local/api/cmd
+    method: post
+    content_type: "application/json"
+    # Firmware validates 600..3450 (else HTTP 400). Caller must stay in range;
+    # the input_number helper below already clamps to it.
+    payload: '{"rpm": {{ rpm }}}'
+  aipool_set_threshold_psi:
+    url: http://aipool.local/api/cmd
+    method: post
+    content_type: "application/json"
+    # No server-side bound; keep 0..60 (gauge range) via the helper.
+    payload: '{"threshold_psi": {{ threshold_psi }}}'
+  aipool_set_backwash_window:
+    url: http://aipool.local/api/cmd
+    method: post
+    content_type: "application/json"
+    # Firmware validates 1..10 (else HTTP 400). Helper below clamps to it.
+    payload: '{"backwash_min": {{ backwash_min }}}'
+
+input_number:
+  aipool_target_rpm:
+    name: AIPool Target RPM
+    min: 600
+    max: 3450
+    step: 50
+    initial: 1600
+    unit_of_measurement: "rpm"
+    icon: mdi:fan
+    mode: slider
+  aipool_threshold_psi:
+    name: AIPool Threshold PSI
+    min: 0
+    max: 60
+    step: 0.5
+    initial: 25
+    unit_of_measurement: "psi"
+    icon: mdi:gauge
+    mode: slider
+  aipool_backwash_min:
+    name: AIPool Backwash Minutes
+    min: 1
+    max: 10
+    step: 1
+    initial: 8
+    unit_of_measurement: "min"
+    icon: mdi:timer
+    mode: slider
+
+automation:
+  # Example 1: HA-owned weekly scheduled backwash with timed return to filter.
+  # Pushes the helper setpoints first, starts BACKWASH, waits the configured
+  # window (<=10 min by helper clamp; firmware also hard-kills at <=10 min),
+  # then returns to FILTER. Gated on gauge freshness; mode: single + no
+  # re-trigger path so it can never fight the 15 s server-side pre-hold.
+  - alias: AIPool Scheduled Backwash
+    id: aipool_scheduled_backwash
+    description: Weekly timed backwash run with automatic return to filter.
+    mode: single
+    trigger:
+      - platform: time
+        at: "02:00:00"
+    condition:
+      - condition: time
+        weekday:
+          - sun
+      - condition: state
+        entity_id: binary_sensor.aipool_gauge_stale
+        state: "off"
+      - condition: state
+        entity_id: binary_sensor.aipool_backwash_running
+        state: "off"
+    action:
+      - service: rest_command.aipool_set_rpm
+        data:
+          rpm: "{{ states('input_number.aipool_target_rpm') | int }}"
+      - delay:
+          seconds: 2
+      - service: rest_command.aipool_set_threshold_psi
+        data:
+          threshold_psi: "{{ states('input_number.aipool_threshold_psi') | float }}"
+      - delay:
+          seconds: 2
+      - service: rest_command.aipool_set_backwash_window
+        data:
+          backwash_min: "{{ states('input_number.aipool_backwash_min') | int }}"
+      - delay:
+          seconds: 2
+      - service: rest_command.aipool_backwash
+      # Timed return to FILTER. Helper clamps to 1..10 min; firmware enforces
+      # the <=10 min hard kill independently, so this can never overrun it.
+      - delay:
+          minutes: "{{ states('input_number.aipool_backwash_min') | int(8) }}"
+      - service: rest_command.aipool_filter
+
+  # Example 2: notify when the gauge goes stale. Never uses raw psi — the
+  # binary_sensor already encodes (psi_ok != true OR psi_age_s > 30).
+  - alias: AIPool Gauge Stale Alert
+    id: aipool_gauge_stale_alert
+    description: Persistent notification when the pressure gauge goes stale.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.aipool_gauge_stale
+        to: "on"
+        for:
+          minutes: 2
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "AIPool gauge stale"
+          message: >-
+            Pressure gauge reading is stale
+            (psi_ok != true or psi_age_s > 30 s). Check the camera/dial view.
+            Freshness-gated automations are holding until it recovers.

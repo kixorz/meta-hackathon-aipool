@@ -1,0 +1,153 @@
+# =============================================================================
+# AIPool Lovelace view (YAML-mode dashboards, or manual-creation reference)
+# -----------------------------------------------------------------------------
+# Usage A (YAML mode): paste this view object into your dashboard's `views:`.
+# Usage B (UI mode):   recreate each card manually following the comments.
+#
+# Requires the entities from aipool_package.yaml:
+#   sensor.aipool_state, binary_sensor.aipool_gauge_stale,
+#   binary_sensor.aipool_backwash_running, input_number.aipool_target_rpm,
+#   input_number.aipool_threshold_psi, input_number.aipool_backwash_min,
+#   rest_command.aipool_backwash / .aipool_filter (called as services).
+#
+# Conventions honored here:
+# - Freshness first: psi is DISPLAYED, but the staleness badge
+#   (binary_sensor.aipool_gauge_stale) is shown next to it and every button
+#   carries a confirmation; automations (in the package) gate on it.
+# - Backwash start button is only rendered while
+#   binary_sensor.aipool_backwash_running is off (true "disabled while active":
+#   no button exists to double-tap mid-run). While running, a countdown card
+#   plus a guarded "Return to Filter" button (same 15 s server pre-hold
+#   applies; confirmation dialog prevents accidental taps) is shown instead.
+# - Attribute values (rpm, watts, conf_sigma, ...) are rendered via markdown
+#   cards so NO extra template sensors are required.
+# - If mDNS fails, replace aipool.local with http://172.16.0.126 in the
+#   PACKAGE (rest sensor / rest_command URLs) — nothing hostname-specific here.
+# =============================================================================
+title: AIPool
+path: aipool
+icon: mdi:pool
+cards:
+  # --- Gauge card: psi + quality + staleness badge ---------------------------
+  - type: entities
+    title: Pressure Gauge
+    show_header_toggle: false
+    entities:
+      - entity: sensor.aipool_state
+        name: Filter pressure
+      - entity: binary_sensor.aipool_gauge_stale
+        name: Gauge stale
+  - type: markdown
+    title: Gauge quality
+    content: >-
+      {% if is_state('sensor.aipool_state', 'unknown') or
+              is_state('sensor.aipool_state', 'unavailable') %}
+        No data from device yet (polling every 10 s).
+      {% elif is_state('binary_sensor.aipool_gauge_stale', 'on') %}
+        STALE — do not trust the psi value for decisions
+        (psi_ok != true or psi_age_s > 30 s).
+      {% else %}
+        Fresh reading — age {{ state_attr('sensor.aipool_state', 'psi_age_s') }} s,
+        conf_sigma {{ state_attr('sensor.aipool_state', 'conf_sigma') }},
+        support {{ state_attr('sensor.aipool_state', 'support') }},
+        blur {{ state_attr('sensor.aipool_state', 'blur') }}.
+      {% endif %}
+
+  # --- Pump card: live rpm/watts + setpoint slider ----------------------------
+  - type: entities
+    title: Pump
+    show_header_toggle: false
+    entities:
+      - entity: input_number.aipool_target_rpm
+        name: Target RPM setpoint
+  - type: markdown
+    title: Pump live
+    content: >-
+      Running at **{{ state_attr('sensor.aipool_state', 'rpm') }} rpm**,
+      **{{ state_attr('sensor.aipool_state', 'watts') }} W**
+      (setpoint {{ state_attr('sensor.aipool_state', 'target_rpm') }} rpm;
+      pump relay: {{ state_attr('sensor.aipool_state', 'pump') }}).
+      To apply the slider, call `rest_command.aipool_set_rpm`
+      with `{"rpm": <600–3450>}` (the weekly automation pushes it automatically).
+
+  # --- Backwash card: button + remaining countdown, disabled while active -----
+  - type: vertical-stack
+    cards:
+      - type: entities
+        title: Backwash
+        show_header_toggle: false
+        entities:
+          - entity: input_number.aipool_backwash_min
+            name: Run window (min, 1–10)
+          - entity: binary_sensor.aipool_backwash_running
+            name: Running
+      # Start button exists ONLY while no run is active (= disabled otherwise).
+      - type: conditional
+        conditions:
+          - entity: binary_sensor.aipool_backwash_running
+            state: "off"
+        card:
+          type: button
+          name: Start Backwash
+          icon: mdi:refresh
+          tap_action:
+            action: call-service
+            service: rest_command.aipool_backwash
+            confirmation:
+              text: Start backwash? Valve moves after the 15 s pre-hold; run auto-stops within 10 min.
+          hold_action:
+            action: none
+      # While active: countdown + guarded early return to filter.
+      - type: conditional
+        conditions:
+          - entity: binary_sensor.aipool_backwash_running
+            state: "on"
+        card:
+          type: markdown
+          content: >-
+            Backwash RUNNING — {{ state_attr('sensor.aipool_state',
+            'backwash_remaining_s') }} s remaining. Start is disabled while
+            active (auto-stops at <=10 min, then returns per schedule).
+      - type: conditional
+        conditions:
+          - entity: binary_sensor.aipool_backwash_running
+            state: "on"
+        card:
+          type: button
+          name: Return to Filter
+          icon: mdi:filter-check
+          tap_action:
+            action: call-service
+            service: rest_command.aipool_filter
+            confirmation:
+              text: Stop backwash early and return to filter? (15 s pre-hold applies.)
+          hold_action:
+            action: none
+
+  # --- Thresholds card --------------------------------------------------------
+  - type: entities
+    title: Thresholds
+    show_header_toggle: false
+    entities:
+      - entity: input_number.aipool_threshold_psi
+        name: Backwash threshold (psi, 0–60)
+      - entity: input_number.aipool_backwash_min
+        name: Backwash window (min, 1–10)
+      - type: divider
+      - type: weblink
+        name: Apply threshold now (Developer Tools > Services)
+        url: /developer-tools/service
+        icon: mdi:tools
+
+  # --- Fault / status card ----------------------------------------------------
+  - type: markdown
+    title: Status
+    content: >-
+      Mode: **{{ state_attr('sensor.aipool_state', 'mode') }}** |
+      Valve: {{ state_attr('sensor.aipool_state', 'valve') }} |
+      Pump: {{ state_attr('sensor.aipool_state', 'pump') }} |
+      Fault: {{ state_attr('sensor.aipool_state', 'fault') or 'none' }} |
+      Uptime: {{ state_attr('sensor.aipool_state', 'up_s') }} s |
+      Config: threshold {{ state_attr('sensor.aipool_state', 'threshold_psi') }} psi,
+      window {{ state_attr('sensor.aipool_state', 'backwash_min') }} min,
+      target {{ state_attr('sensor.aipool_state', 'target_rpm') }} rpm.
