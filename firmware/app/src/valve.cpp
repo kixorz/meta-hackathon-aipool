@@ -1,6 +1,6 @@
 // Valve actuator: 3 relays over shared RS485 Modbus board.
 // Controls-safety contract: caller guarantees pump stopped + 15s pre-hold;
-// this file guarantees break-before-make, echo verify, fail-safe OFF.
+// this file guarantees break-before-make, latched position, travel time.
 
 #include "valve.h"
 
@@ -30,13 +30,13 @@ static bool writeRelay(uint8_t relay, bool on) {
 }
 
 static bool allDrivesOff() {
-  // MODE is a selector, not a drive — but parking it at FILTER (OFF) is the
-  // documented fail-safe. Drives R2/R3 must never be on together.
-  if (!writeRelay(VALVE_RELAY_BACKWASH_DRIVE, false))
+  // Fail-safe: valve relays R1/R2/R3 OFF (bench safe state; the test rig
+  // ends here too). Position relays are re-latched on the next move.
+  if (!writeRelay(VALVE_RELAY_R1, false))
     return false;
-  if (!writeRelay(VALVE_RELAY_FILTER_DRIVE, false))
+  if (!writeRelay(VALVE_RELAY_R2, false))
     return false;
-  if (!writeRelay(VALVE_RELAY_MODE, false))
+  if (!writeRelay(VALVE_RELAY_R3, false))
     return false;
   return true;
 }
@@ -64,38 +64,34 @@ const char *valveLastError() { return s_err; }
 
 static bool driveTo(bool backwash) {
   s_err[0] = '\0';
-#if VALVE_MODE_ON_IS_BACKWASH
-  bool modeOn = backwash;
-#else
-  bool modeOn = !backwash;
-#endif
-  uint8_t driveRelay = backwash ? VALVE_RELAY_BACKWASH_DRIVE
-                                : VALVE_RELAY_FILTER_DRIVE;
-
+  uint8_t target =
+      backwash ? VALVE_BITMAP_BACKWASH : VALVE_BITMAP_FILTER;
   // 1. Break-before-make: everything OFF first.
-  if (!writeRelay(VALVE_RELAY_BACKWASH_DRIVE, false))
-    return false;
-  if (!writeRelay(VALVE_RELAY_FILTER_DRIVE, false))
-    return false;
-  // 2. Select direction, let contactor settle.
-  if (!writeRelay(VALVE_RELAY_MODE, modeOn))
+  if (!allDrivesOff())
     return false;
   delay(VALVE_MODE_SETTLE_MS);
-  // 3. Pulse the target drive for travel time.
-  if (!writeRelay(driveRelay, true))
+  // 2. Latch the target position (held energized while selected).
+  if (!writeRelay(VALVE_RELAY_R1,
+                  (target & RELAY_BOARD_BIT(1)) != 0))
     return false;
+  if (!writeRelay(VALVE_RELAY_R2,
+                  (target & RELAY_BOARD_BIT(2)) != 0))
+    return false;
+  if (!writeRelay(VALVE_RELAY_R3,
+                  (target & RELAY_BOARD_BIT(3)) != 0))
+    return false;
+  // 3. Travel time: the actuator needs ~20 s end to end.
   delay(VALVE_TRAVEL_MS);
-  if (!writeRelay(driveRelay, false))
-    return false;
-  // 4. Verify parked: no drive energized.
+  // 4. Verify latched: readback must equal the target bitmap (masked to
+  // the valve relays; relays 4-8 belong to other circuits, if any).
   uint8_t bm = 0;
   if (!valveReadback(bm)) {
     snprintf(s_err, sizeof(s_err), "readback failed (A/B? GND? 12V?)");
     return false;
   }
-  if (relay_board_get(bm, VALVE_RELAY_BACKWASH_DRIVE) ||
-      relay_board_get(bm, VALVE_RELAY_FILTER_DRIVE)) {
-    snprintf(s_err, sizeof(s_err), "drive stuck ON bm=0x%02X", bm);
+  if ((bm & 0x07) != target) {
+    snprintf(s_err, sizeof(s_err),
+             "pos not latched bm=0x%02X want 0x%02X", bm, target);
     return false;
   }
   return true;

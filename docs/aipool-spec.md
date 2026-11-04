@@ -7,7 +7,7 @@ Numbers live here. Agents in `.opencode/agents/` must read this per task, never 
 - Boot / comm-loss / reboot mid-run fail-safe: `FILTER`, all drives OFF.
 
 ## Valve actuator (3 relays, `relay_board` slave 1, 9600 8N1)
-- Map: R1=MODE (direction select), R2=OPEN drive, R3=CLOSE drive.
+- Map (bench truth): FILTER = R2 latched ON, BACKWASH = R1+R3 latched ON. Moves: all OFF (break-before-make) -> latch target -> ~20 s travel -> verify latched bitmap (0x02 / 0x05).
 - Sequence for `valve_goto()`: drives OFF → require `pump_stopped_ok` + **15 s pre-hold** (pump_stop → valve_move only, no post-hold, non-blocking) → set MODE → 200 ms settle → drive → `0x01` echo verify → drives OFF → report stable.
 - Constraints: never OPEN+CLOSE together (break-before-make); still take the 15 s once if pump was already stopped.
 
